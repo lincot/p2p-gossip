@@ -7,18 +7,20 @@ mod config;
 mod log;
 
 use clap::Parser;
-use config::{configure_client, generate_self_signed_cert};
+use config::{configure_client_without_server_verification, read_certs_from_file};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
+use dns_lookup::lookup_addr;
 use log::log;
-use quinn::{Connection, Endpoint, ServerConfig};
+use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use std::{
     collections::HashSet,
     io::{self, Write},
+    path::PathBuf,
     sync::Arc,
 };
 use tokio::{
@@ -37,19 +39,34 @@ struct Args {
     port: u16,
     #[arg(long)]
     connect: Option<SocketAddr>,
+    #[arg(long, action)]
+    skip_server_verification: bool,
+    #[arg(long)]
+    cert: Option<PathBuf>,
+    #[arg(long)]
+    key: Option<PathBuf>,
+    #[arg(long)]
+    ip: Option<IpAddr>,
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = Args::parse();
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), args.port);
+    let addr = SocketAddr::new(
+        args.ip.unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+        args.port,
+    );
 
-    let (cert, key) = generate_self_signed_cert().unwrap();
-    let mut endpoint = Endpoint::server(
-        ServerConfig::with_single_cert(vec![cert], key).unwrap(),
-        addr,
+    let (certs, key) = read_certs_from_file(
+        args.cert.as_ref().unwrap_or(&PathBuf::from("cert.pem")),
+        args.key.as_ref().unwrap_or(&PathBuf::from("key.pem")),
     )?;
-    endpoint.set_default_client_config(configure_client());
+    let mut endpoint = Endpoint::server(ServerConfig::with_single_cert(certs, key).unwrap(), addr)?;
+    endpoint.set_default_client_config(if args.skip_server_verification {
+        configure_client_without_server_verification()
+    } else {
+        ClientConfig::with_native_roots()
+    });
 
     let (tx, _rx) = broadcast::channel::<String>(16);
 
@@ -99,8 +116,8 @@ async fn initial_connect(
     connect: SocketAddr,
     tx: &Sender<String>,
 ) -> io::Result<Arc<Mutex<HashSet<SocketAddr>>>> {
-    // TODO: DNS lookup
-    let connection = endpoint.connect(connect, "localhost").unwrap().await?;
+    let name = lookup_addr(&connect.ip())?;
+    let connection = endpoint.connect(connect, &name).unwrap().await?;
     let mut recv = connection.accept_uni().await?;
     let line = recv.read_to_end(1024).await.unwrap();
     let peers: HashSet<SocketAddr> = bincode::deserialize(&line).unwrap();
@@ -109,7 +126,8 @@ async fn initial_connect(
 
     let mut peers_lock = peers.lock().await;
     for addr in &*peers_lock {
-        let connection = endpoint.connect(*addr, "localhost").unwrap().await?;
+        let name = lookup_addr(&addr.ip())?;
+        let connection = endpoint.connect(*addr, &name).unwrap().await?;
 
         let mut recv = connection.accept_uni().await?;
         let line = recv.read_to_end(1024).await.unwrap();

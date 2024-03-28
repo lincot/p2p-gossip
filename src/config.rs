@@ -1,13 +1,36 @@
 use quinn::ClientConfig;
-use std::sync::Arc;
+use rustls::{Certificate, PrivateKey};
+use std::{
+    fs::File,
+    io::{self, BufReader},
+    path::Path,
+    sync::Arc,
+};
 
-// TODO: allow non-self-signed
+pub fn read_certs_from_file(
+    cert_filename: &Path,
+    key_filename: &Path,
+) -> io::Result<(Vec<Certificate>, PrivateKey)> {
+    let mut cert_chain_reader = BufReader::new(File::open(cert_filename)?);
+    let certs = rustls_pemfile::certs(&mut cert_chain_reader)?
+        .into_iter()
+        .map(Certificate)
+        .collect();
 
-pub fn generate_self_signed_cert() -> Result<(rustls::Certificate, rustls::PrivateKey), rcgen::Error>
-{
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
-    let key = rustls::PrivateKey(cert.serialize_private_key_der());
-    Ok((rustls::Certificate(cert.serialize_der()?), key))
+    let mut key_reader = BufReader::new(File::open(key_filename)?);
+    let mut keys = {
+        let keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader)?;
+        if keys.is_empty() {
+            rustls_pemfile::rsa_private_keys(&mut key_reader)?
+        } else {
+            keys
+        }
+    };
+
+    assert_eq!(keys.len(), 1);
+    let key = rustls::PrivateKey(keys.remove(0));
+
+    Ok((certs, key))
 }
 
 pub struct SkipServerVerification;
@@ -32,7 +55,7 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-pub fn configure_client() -> ClientConfig {
+pub fn configure_client_without_server_verification() -> ClientConfig {
     let crypto = rustls::ClientConfig::builder()
         .with_safe_defaults()
         .with_custom_certificate_verifier(SkipServerVerification::new())
