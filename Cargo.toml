@@ -13,3 +13,6 @@ rcgen = "0.12.1"
 rand_pcg = "0.3.1"
 rand = "0.8.5"
 bs58 = "0.5.1"
+heapless = "0.8.0"
+digital = { git = "https://github.com/lincot/rusted-katana" }
+unchecked-core = { git = "https://github.com/lincot/rusted-katana" }
