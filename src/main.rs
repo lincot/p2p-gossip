@@ -74,29 +74,14 @@ async fn main() -> io::Result<()> {
     while let Some(connection) = endpoint.accept().await {
         let connection = connection.await?;
 
-        let (mut send, mut recv) = connection.accept_bi().await?;
+        log(&[
+            b"Accepted a connection from ",
+            connection.remote_address().to_string().as_bytes(),
+        ])?;
 
-        let mut is_newcomer = [0];
-        recv.read_exact(&mut is_newcomer).await.unwrap();
-
-        if is_newcomer == [0] {
-            let set = peers.lock().await;
-            send.write_all(&bincode::serialize(&*set).unwrap()).await?;
-            drop(set);
-            log(&[
-                b"accepted a connection from ",
-                connection.remote_address().to_string().as_bytes(),
-            ])?;
-        } else {
-            // TODO: only send new peers
-            let set = peers.lock().await;
-            send.write_all(&bincode::serialize(&*set).unwrap()).await?;
-            drop(set);
-            log(&[
-                b"accepted a newcomer connection from ",
-                connection.remote_address().to_string().as_bytes(),
-            ])?;
-        }
+        let mut send = connection.open_uni().await?;
+        send.write_all(&bincode::serialize(&*peers.lock().await).unwrap())
+            .await?;
         send.finish().await?;
 
         peers.lock().await.insert(connection.remote_address());
@@ -113,18 +98,14 @@ async fn newcomer_connect(
 ) -> io::Result<HashSet<SocketAddr>> {
     // TODO: DNS lookup
     let connection = endpoint.connect(connect, "localhost").unwrap().await?;
-    let (mut send, mut recv) = connection.open_bi().await?;
-    send.write_all(&bincode::serialize(&true).unwrap()).await?;
-    send.finish().await?;
+    let mut recv = connection.accept_uni().await?;
     let line = recv.read_to_end(1024).await.unwrap();
     let mut peers: HashSet<SocketAddr> = bincode::deserialize(&line).unwrap();
-    let mut new_peers = Vec::new();
+    let mut new_peers = HashSet::new();
     for addr in &peers {
         let connection = endpoint.connect(*addr, "localhost").unwrap().await?;
 
-        let (mut send, mut recv) = connection.open_bi().await?;
-        send.write_all(&bincode::serialize(&false).unwrap()).await?;
-        send.finish().await?;
+        let mut recv = connection.accept_uni().await?;
         let line = recv.read_to_end(1024).await.unwrap();
         let new_peers_chunk: Vec<SocketAddr> = bincode::deserialize(&line).unwrap();
         new_peers.extend(new_peers_chunk);
