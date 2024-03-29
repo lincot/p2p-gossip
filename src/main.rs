@@ -28,6 +28,7 @@ use tokio::{
         broadcast::{self, Receiver, Sender},
         Mutex,
     },
+    task::JoinHandle,
     time::Instant,
 };
 
@@ -100,8 +101,9 @@ async fn main() -> io::Result<()> {
         ])?;
 
         let mut send = connection.open_uni().await?;
-        send.write_all(&bincode::serialize(&*peers.lock().await).unwrap())
-            .await?;
+        for peer in &*peers.lock().await {
+            send.write_all(&bincode::serialize(peer).unwrap()).await?;
+        }
         send.finish().await?;
 
         peers.lock().await.insert(connection.remote_address());
@@ -116,31 +118,58 @@ async fn initial_connect(
     connect: SocketAddr,
     tx: &Sender<String>,
 ) -> io::Result<Arc<Mutex<HashSet<SocketAddr>>>> {
-    let name = lookup_addr(&connect.ip())?;
-    let connection = endpoint.connect(connect, &name).unwrap().await?;
-    let mut recv = connection.accept_uni().await?;
-    let line = recv.read_to_end(1024).await.unwrap();
-    let peers: HashSet<SocketAddr> = bincode::deserialize(&line).unwrap();
-    let peers = Arc::new(Mutex::new(peers));
-    let mut new_peers = HashSet::new();
+    // temporary empty hashmap
+    let peers_arc = Arc::new(Mutex::new(HashSet::new()));
+    // prevent anyone from acquiring it while it's being built
+    let mut peers_lock = peers_arc.lock().await;
+    let mut peers = HashSet::new();
 
-    let mut peers_lock = peers.lock().await;
-    for addr in &*peers_lock {
-        let name = lookup_addr(&addr.ip())?;
-        let connection = endpoint.connect(*addr, &name).unwrap().await?;
+    let mut new_peers = HashSet::from([connect]);
+    // it only iterates twice if the first node provides us
+    // with all the others; we could as well do recursion
+    while !new_peers.is_empty() {
+        peers.extend(&new_peers);
+        let mut newer_peers = HashSet::new();
 
-        let mut recv = connection.accept_uni().await?;
-        let line = recv.read_to_end(1024).await.unwrap();
-        let new_peers_chunk: Vec<SocketAddr> = bincode::deserialize(&line).unwrap();
-        new_peers.extend(new_peers_chunk);
+        for addr in new_peers {
+            outgoing_connect(
+                endpoint,
+                addr,
+                tx.subscribe(),
+                peers_arc.clone(),
+                &peers,
+                &mut newer_peers,
+            )
+            .await?;
+        }
 
-        tokio::spawn(handle_connection(connection, tx.subscribe(), peers.clone()));
+        new_peers = newer_peers;
     }
-    peers_lock.extend(new_peers);
-    peers_lock.insert(connect);
+
+    *peers_lock = peers;
     drop(peers_lock);
-    tokio::spawn(handle_connection(connection, tx.subscribe(), peers.clone()));
-    Ok(peers)
+    Ok(peers_arc)
+}
+
+async fn outgoing_connect(
+    endpoint: &Endpoint,
+    addr: SocketAddr,
+    rx: Receiver<String>,
+    peers_arc: Arc<Mutex<HashSet<SocketAddr>>>,
+    peers: &HashSet<SocketAddr>,
+    new_peers: &mut HashSet<SocketAddr>,
+) -> io::Result<JoinHandle<io::Result<()>>> {
+    let name = lookup_addr(&addr.ip())?;
+    let connection = endpoint.connect(addr, &name).unwrap().await?;
+    let mut recv = connection.accept_uni().await?;
+    let data = recv.read_to_end(10_000).await.unwrap();
+    for segment in data.chunks_exact(10) {
+        let peer = bincode::deserialize(segment).unwrap();
+        if !peers.contains(&peer) {
+            new_peers.insert(peer);
+        }
+    }
+    Ok(tokio::spawn(handle_connection(connection, rx, peers_arc)))
 }
 
 async fn message_producing_loop(
