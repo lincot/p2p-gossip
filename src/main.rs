@@ -15,7 +15,7 @@ use core::{
 use dns_lookup::lookup_addr;
 use futures::{future::BoxFuture, FutureExt};
 use log::log;
-use quinn::{ClientConfig, Connecting, Connection, Endpoint, ServerConfig};
+use quinn::{ClientConfig, Connecting, Connection, ConnectionError, Endpoint, ServerConfig};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use std::{
@@ -74,7 +74,7 @@ async fn main() -> io::Result<()> {
     let (tx, _rx) = broadcast::channel::<String>(16);
 
     let peers = if let Some(connect) = args.connect {
-        initial_connect(endpoint.clone(), connect, tx.clone()).await?
+        initial_connect(endpoint.clone(), connect, tx.clone()).await
     } else {
         Arc::new(Mutex::new(HashSet::new()))
     };
@@ -87,7 +87,7 @@ async fn main() -> io::Result<()> {
         ));
     }
 
-    log(&[b"My address is \"", addr.to_string().as_bytes(), b"\""])?;
+    log(&[b"My address is \"", addr.to_string().as_bytes(), b"\""]);
 
     while let Some(connecting) = endpoint.accept().await {
         let remote_addr = connecting.remote_address();
@@ -95,13 +95,13 @@ async fn main() -> io::Result<()> {
             Ok(Some(_)) => log(&[
                 b"Accepted a connection from ",
                 remote_addr.to_string().as_bytes(),
-            ])?,
+            ]),
             Err(e) => log(&[
                 b"Failed to accept a connection from ",
                 remote_addr.to_string().as_bytes(),
                 b", error: ",
                 e.to_string().as_bytes(),
-            ])?,
+            ]),
             Ok(None) => {}
         }
     }
@@ -113,7 +113,7 @@ async fn accept_connection(
     connecting: Connecting,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     rx: Receiver<String>,
-) -> Result<Option<JoinHandle<Result<(), io::Error>>>, Box<dyn Error>> {
+) -> io::Result<Option<JoinHandle<()>>> {
     let connection = connecting.await?;
 
     if peers.lock().await.contains(&connection.remote_address()) {
@@ -123,7 +123,7 @@ async fn accept_connection(
 
     let mut send = connection.open_uni().await?;
     for peer in &*peers.lock().await {
-        send.write_all(&bincode::serialize(peer)?).await?;
+        send.write_all(&bincode::serialize(peer).unwrap()).await?;
     }
     send.finish().await?;
 
@@ -139,11 +139,11 @@ async fn initial_connect(
     endpoint: Endpoint,
     connect: SocketAddr,
     tx: Sender<String>,
-) -> io::Result<Arc<Mutex<HashSet<SocketAddr>>>> {
+) -> Arc<Mutex<HashSet<SocketAddr>>> {
     let peers = Arc::new(Mutex::new(HashSet::from([connect])));
     let failed_peers = Arc::new(Mutex::new(HashSet::new()));
-    outgoing_connect(endpoint, connect, tx, peers.clone(), failed_peers).await?;
-    Ok(peers)
+    outgoing_connect(endpoint, connect, tx, peers.clone(), failed_peers).await;
+    peers
 }
 
 async fn outgoing_connect(
@@ -152,7 +152,7 @@ async fn outgoing_connect(
     tx: Sender<String>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
-) -> io::Result<()> {
+) {
     if let Err(e) =
         outgoing_connect_inner(endpoint, addr, tx, peers.clone(), failed_peers.clone()).await
     {
@@ -161,11 +161,10 @@ async fn outgoing_connect(
             addr.to_string().as_bytes(),
             b", error: ",
             e.to_string().as_bytes(),
-        ])?;
+        ]);
         failed_peers.lock().await.insert(addr);
         peers.lock().await.remove(&addr);
     }
-    Ok(())
 }
 
 fn outgoing_connect_inner(
@@ -204,7 +203,7 @@ async fn message_producing_loop(
     duration: Duration,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     tx: Sender<String>,
-) -> io::Result<()> {
+) {
     fn generate_random_message(rng: &mut impl Rng) -> String {
         let mut message = [0; 32];
         rng.fill_bytes(&mut message);
@@ -221,13 +220,13 @@ async fn message_producing_loop(
                 to.extend_from_slice(b", ");
             }
             to.push(b'"');
-            write!(&mut to, "{addr}")?;
+            write!(&mut to, "{addr}").unwrap();
             to.push(b'"');
         }
 
         if !to.is_empty() {
             let msg = generate_random_message(&mut rng);
-            log(&[b"Sending message [", msg.as_bytes(), b"] to [", &to, b"]"])?;
+            log(&[b"Sending message [", msg.as_bytes(), b"] to [", &to, b"]"]);
             tx.send(msg).unwrap();
         }
         tokio::time::sleep_until(end).await;
@@ -238,16 +237,21 @@ async fn handle_connection(
     connection: Connection,
     rx: Receiver<String>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
-) -> io::Result<()> {
-    let res = handle_connection_inner(&connection, rx).await;
+) {
+    let disconnect_reason = handle_connection_inner(&connection, rx).await;
+    log(&[
+        b"Closed connection to ",
+        connection.remote_address().to_string().as_bytes(),
+        b", reason: ",
+        disconnect_reason.to_string().as_bytes(),
+    ]);
     peers.lock().await.remove(&connection.remote_address());
-    res
 }
 
 async fn handle_connection_inner(
     connection: &Connection,
     mut rx: Receiver<String>,
-) -> io::Result<()> {
+) -> ConnectionError {
     tokio::spawn({
         let connection = connection.clone();
         async move { sending_loop(&mut rx, &connection).await }
@@ -255,20 +259,14 @@ async fn handle_connection_inner(
     loop {
         let receiving_res = receiving_loop(connection).await;
         if let Some(reason) = connection.close_reason() {
-            log(&[
-                b"Closed connection to ",
-                connection.remote_address().to_string().as_bytes(),
-                b", reason: ",
-                reason.to_string().as_bytes(),
-            ])?;
-            return Ok(());
+            return reason;
         }
         log(&[
             b"Failed to receive from ",
             connection.remote_address().to_string().as_bytes(),
             b", error:",
             format!("{receiving_res:?}").as_bytes(),
-        ])?;
+        ]);
     }
 }
 
@@ -282,11 +280,11 @@ async fn receiving_loop(connection: &Connection) -> Result<(), Box<dyn Error>> {
             &msg,
             b"] from ",
             peer_addr.as_bytes(),
-        ])?;
+        ]);
     }
 }
 
-async fn sending_loop(rx: &mut Receiver<String>, connection: &Connection) -> Result<(), io::Error> {
+async fn sending_loop(rx: &mut Receiver<String>, connection: &Connection) -> io::Result<()> {
     while let Ok(msg) = rx.recv().await {
         let mut send = connection.open_uni().await?;
         send.write_all(msg.as_bytes()).await?;

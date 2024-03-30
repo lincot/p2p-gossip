@@ -1,12 +1,12 @@
 use digital::{MaxLenBase10, WriteNumUnchecked};
 use std::{
-    io::{self, stdout, IoSlice, Write},
+    io::{stdout, IoSlice, Write},
     sync::LazyLock,
 };
 use tokio::time::Instant;
 use unchecked_core::PushUnchecked;
 
-pub fn log(bufs: &[&[u8]]) -> io::Result<()> {
+pub fn log(bufs: &[&[u8]]) {
     static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 
     let time = format_time(START_TIME.elapsed().as_secs());
@@ -22,7 +22,7 @@ pub fn log(bufs: &[&[u8]]) -> io::Result<()> {
         ioslices.push_unchecked(IoSlice::new(b"\n"));
     }
 
-    stdout().write_all_vectored(&mut ioslices)
+    stdout().write_all_vectored(&mut ioslices).unwrap();
 }
 
 fn format_time(total_secs: u64) -> heapless::String<{ u64::MAX_LEN_BASE10 + ":00:00".len() }> {
