@@ -13,6 +13,7 @@ use core::{
     time::Duration,
 };
 use dns_lookup::lookup_addr;
+use futures::{future::BoxFuture, FutureExt};
 use log::log;
 use quinn::{ClientConfig, Connecting, Connection, Endpoint, ServerConfig};
 use rand::{Rng, SeedableRng};
@@ -73,7 +74,7 @@ async fn main() -> io::Result<()> {
     let (tx, _rx) = broadcast::channel::<String>(16);
 
     let peers = if let Some(connect) = args.connect {
-        initial_connect(&endpoint, connect, &tx).await?
+        initial_connect(endpoint.clone(), connect, tx.clone()).await?
     } else {
         Arc::new(Mutex::new(HashSet::new()))
     };
@@ -122,7 +123,7 @@ async fn accept_connection(
 
     let mut send = connection.open_uni().await?;
     for peer in &*peers.lock().await {
-        send.write_all(&bincode::serialize(peer).unwrap()).await?;
+        send.write_all(&bincode::serialize(peer)?).await?;
     }
     send.finish().await?;
 
@@ -135,76 +136,68 @@ async fn accept_connection(
 }
 
 async fn initial_connect(
-    endpoint: &Endpoint,
+    endpoint: Endpoint,
     connect: SocketAddr,
-    tx: &Sender<String>,
+    tx: Sender<String>,
 ) -> io::Result<Arc<Mutex<HashSet<SocketAddr>>>> {
-    // temporary empty hashmap
-    let peers_arc = Arc::new(Mutex::new(HashSet::new()));
-    // prevent it from being acquired while it's being filled
-    let mut peers_lock = peers_arc.lock().await;
-    let mut peers = HashSet::new();
-    let mut failed_peers = Vec::new();
-
-    let mut new_peers = HashSet::from([connect]);
-    // it only iterates twice if the first node provides us
-    // with all the others; we could as well do recursion
-    while !new_peers.is_empty() {
-        peers.extend(&new_peers);
-        let mut newer_peers = HashSet::new();
-
-        for addr in new_peers {
-            if let Err(e) = outgoing_connect(
-                endpoint,
-                addr,
-                tx.subscribe(),
-                peers_arc.clone(),
-                &peers,
-                &mut newer_peers,
-            )
-            .await
-            {
-                log(&[
-                    b"Failed to connect to ",
-                    addr.to_string().as_bytes(),
-                    b", error: ",
-                    e.to_string().as_bytes(),
-                ])?;
-                failed_peers.push(addr);
-            }
-        }
-
-        new_peers = newer_peers;
-    }
-
-    for addr in failed_peers {
-        peers.remove(&addr);
-    }
-
-    *peers_lock = peers;
-    drop(peers_lock);
-    Ok(peers_arc)
+    let peers = Arc::new(Mutex::new(HashSet::from([connect])));
+    let failed_peers = Arc::new(Mutex::new(HashSet::new()));
+    outgoing_connect(endpoint, connect, tx, peers.clone(), failed_peers).await?;
+    Ok(peers)
 }
 
 async fn outgoing_connect(
-    endpoint: &Endpoint,
+    endpoint: Endpoint,
     addr: SocketAddr,
-    rx: Receiver<String>,
-    peers_arc: Arc<Mutex<HashSet<SocketAddr>>>,
-    peers: &HashSet<SocketAddr>,
-    new_peers: &mut HashSet<SocketAddr>,
-) -> Result<JoinHandle<io::Result<()>>, Box<dyn Error>> {
-    let name = lookup_addr(&addr.ip())?;
-    let connection = endpoint.connect(addr, &name)?.await?;
-    let mut recv = connection.accept_uni().await?;
-    let data = recv.read_to_end(10_000).await?;
-    for segment in data.chunks_exact(10) {
-        let peer = bincode::deserialize(segment)?;
-        if !peers.contains(&peer) {
-            new_peers.insert(peer);
-        }
+    tx: Sender<String>,
+    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
+) -> io::Result<()> {
+    if let Err(e) =
+        outgoing_connect_inner(endpoint, addr, tx, peers.clone(), failed_peers.clone()).await
+    {
+        log(&[
+            b"Failed to connect to ",
+            addr.to_string().as_bytes(),
+            b", error: ",
+            e.to_string().as_bytes(),
+        ])?;
+        failed_peers.lock().await.insert(addr);
+        peers.lock().await.remove(&addr);
     }
-    Ok(tokio::spawn(handle_connection(connection, rx, peers_arc)))
+    Ok(())
+}
+
+fn outgoing_connect_inner(
+    endpoint: Endpoint,
+    addr: SocketAddr,
+    tx: Sender<String>,
+    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
+) -> BoxFuture<'static, Result<(), Box<dyn Error + Send + Sync>>> {
+    async move {
+        let name = lookup_addr(&addr.ip())?;
+        let connection = endpoint.connect(addr, &name)?.await?;
+        let mut recv = connection.accept_uni().await?;
+        let data = recv.read_to_end(10_000).await?;
+        let (mut peers_lock, failed_peers_lock) = (peers.lock().await, failed_peers.lock().await);
+        for segment in data.chunks_exact(10) {
+            let peer = bincode::deserialize(segment)?;
+            if !failed_peers_lock.contains(&peer) && peers_lock.insert(peer) {
+                tokio::spawn(outgoing_connect(
+                    endpoint.clone(),
+                    peer,
+                    tx.clone(),
+                    peers.clone(),
+                    failed_peers.clone(),
+                ));
+            }
+        }
+        drop((peers_lock, failed_peers_lock));
+        tokio::spawn(handle_connection(connection, tx.subscribe(), peers));
+        Ok(())
+    }
+    .boxed()
 }
 
 async fn message_producing_loop(
