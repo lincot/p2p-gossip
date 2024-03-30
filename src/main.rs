@@ -180,8 +180,10 @@ fn outgoing_connect_inner(
         let mut recv = connection.accept_uni().await?;
         let data = recv.read_to_end(10_000).await?;
         let (mut peers_lock, failed_peers_lock) = (peers.lock().await, failed_peers.lock().await);
-        for segment in data.chunks_exact(10) {
-            let peer = bincode::deserialize(segment)?;
+        // deserialize them one by one to avoid creating a temporary array
+        let mut i = 0;
+        while i + 10 <= data.len() {
+            let peer = bincode::deserialize(&data[i..])?;
             if !failed_peers_lock.contains(&peer) && peers_lock.insert(peer) {
                 tokio::spawn(outgoing_connect(
                     endpoint.clone(),
@@ -191,6 +193,11 @@ fn outgoing_connect_inner(
                     failed_peers.clone(),
                 ));
             }
+            i += if peer.is_ipv4() {
+                IPV4_SERIALIZED_LEN
+            } else {
+                IPV6_SERIALIZED_LEN
+            };
         }
         drop((peers_lock, failed_peers_lock));
         tokio::spawn(handle_connection(connection, tx.subscribe(), peers));
@@ -292,4 +299,41 @@ async fn sending_loop(rx: &mut Receiver<String>, connection: &Connection) -> io:
     }
 
     Ok(())
+}
+
+/// The length of a `SocketAddr::V4`, serialized with bincode.
+const IPV4_SERIALIZED_LEN: usize = 10;
+/// The length of a `SocketAddr::V6`, serialized with bincode.
+const IPV6_SERIALIZED_LEN: usize = 22;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::net::Ipv6Addr;
+
+    #[test]
+    fn test_ipv4_serialized_len() {
+        assert_eq!(
+            IPV4_SERIALIZED_LEN,
+            bincode::serialize(&SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                8080,
+            ))
+            .unwrap()
+            .len()
+        )
+    }
+
+    #[test]
+    fn test_ipv6_serialized_len() {
+        assert_eq!(
+            IPV6_SERIALIZED_LEN,
+            bincode::serialize(&SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2ff)),
+                8080,
+            ))
+            .unwrap()
+            .len()
+        );
+    }
 }
