@@ -217,26 +217,37 @@ async fn message_producing_loop(
         bs58::encode(message).into_string()
     }
 
+    fn format_peers(peers: &HashSet<SocketAddr>) -> Vec<u8> {
+        // with IPv6, the length may be greater than the capacity provided
+        let mut formatted_peers =
+            Vec::with_capacity("\"255.255.255.255:65535\", ".len() * peers.len());
+        for (i, addr) in peers.iter().enumerate() {
+            if i != 0 {
+                formatted_peers.extend_from_slice(b", ");
+            }
+            write!(&mut formatted_peers, "\"{addr}\"").unwrap();
+        }
+        formatted_peers
+    }
+
     let mut rng = Pcg64Mcg::from_entropy();
 
     loop {
-        let end = Instant::now() + duration;
-        let mut to = Vec::new();
-        for (i, addr) in peers.lock().await.iter().enumerate() {
-            if i != 0 {
-                to.extend_from_slice(b", ");
-            }
-            to.push(b'"');
-            write!(&mut to, "{addr}").unwrap();
-            to.push(b'"');
-        }
+        let end_time = Instant::now() + duration;
+        let formatted_peers = format_peers(&*peers.lock().await);
 
-        if !to.is_empty() {
+        if !formatted_peers.is_empty() {
             let msg = generate_random_message(&mut rng);
-            log(&[b"Sending message [", msg.as_bytes(), b"] to [", &to, b"]"]);
+            log(&[
+                b"Sending message [",
+                msg.as_bytes(),
+                b"] to [",
+                &formatted_peers,
+                b"]",
+            ]);
             tx.send(msg).unwrap();
         }
-        tokio::time::sleep_until(end).await;
+        tokio::time::sleep_until(end_time).await;
     }
 }
 
