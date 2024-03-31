@@ -9,6 +9,7 @@ mod log;
 use clap::Parser;
 use config::{configure_client_without_server_verification, read_certs_from_file};
 use core::{
+    fmt::Write,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
@@ -21,7 +22,7 @@ use rand_pcg::Pcg64Mcg;
 use std::{
     collections::HashSet,
     error::Error,
-    io::{self, Write},
+    io::{self},
     path::PathBuf,
     sync::Arc,
 };
@@ -217,13 +218,13 @@ async fn message_producing_loop(
         bs58::encode(message).into_string()
     }
 
-    fn format_peers(peers: &HashSet<SocketAddr>) -> Vec<u8> {
+    fn format_peers(peers: &HashSet<SocketAddr>) -> String {
         // with IPv6, the length may be greater than the capacity provided
         let mut formatted_peers =
-            Vec::with_capacity("\"255.255.255.255:65535\", ".len() * peers.len());
+            String::with_capacity("\"255.255.255.255:65535\", ".len() * peers.len());
         for (i, addr) in peers.iter().enumerate() {
             if i != 0 {
-                formatted_peers.extend_from_slice(b", ");
+                formatted_peers.push_str(", ");
             }
             write!(&mut formatted_peers, "\"{addr}\"").unwrap();
         }
@@ -242,7 +243,7 @@ async fn message_producing_loop(
                 b"Sending message [",
                 msg.as_bytes(),
                 b"] to [",
-                &formatted_peers,
+                formatted_peers.as_bytes(),
                 b"]",
             ]);
             tx.send(msg.into()).unwrap();
