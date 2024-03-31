@@ -9,7 +9,7 @@ use clap::Parser;
 use config::{configure_client_without_server_verification, read_certs_from_file};
 use core::{
     fmt::Write,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     time::Duration,
 };
 use dns_lookup::lookup_addr;
@@ -32,37 +32,31 @@ struct Args {
     #[arg(long)]
     period: Option<usize>,
     /// IP to run on.
-    #[arg(long)]
-    ip: Option<IpAddr>,
+    #[arg(long, default_value("127.0.0.1"))]
+    ip: IpAddr,
     /// Port to run on.
     #[arg(long)]
     port: u16,
-    /// The address of the first node to connect to.
+    /// Address of the first node to connect to.
     #[arg(long)]
     connect: Option<SocketAddr>,
     /// Do not verify peers' TLS certificates.
     #[arg(long, action)]
     skip_server_verification: bool,
     /// Path to the certificate PEM file.
-    #[arg(long)]
-    cert: Option<PathBuf>,
+    #[arg(long, default_value("cert.pem"))]
+    cert: PathBuf,
     /// Path to the secret key PEM file.
-    #[arg(long)]
-    key: Option<PathBuf>,
+    #[arg(long, default_value("key.pem"))]
+    key: PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = Args::parse();
-    let addr = SocketAddr::new(
-        args.ip.unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
-        args.port,
-    );
+    let addr = SocketAddr::new(args.ip, args.port);
 
-    let (certs, key) = read_certs_from_file(
-        args.cert.as_ref().unwrap_or(&PathBuf::from("cert.pem")),
-        args.key.as_ref().unwrap_or(&PathBuf::from("key.pem")),
-    )?;
+    let (certs, key) = read_certs_from_file(&args.cert, &args.key)?;
     let mut endpoint = Endpoint::server(ServerConfig::with_single_cert(certs, key).unwrap(), addr)?;
     endpoint.set_default_client_config(if args.skip_server_verification {
         configure_client_without_server_verification()
@@ -364,7 +358,7 @@ const IPV6_SERIALIZED_LEN: usize = 22;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::net::Ipv6Addr;
+    use core::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn test_ipv4_serialized_len() {
