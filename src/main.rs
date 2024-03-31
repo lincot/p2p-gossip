@@ -260,10 +260,12 @@ async fn producer_loop(
 
     let mut rng = Pcg64Mcg::from_entropy();
 
+    let mut deadline = Instant::now() + duration;
     loop {
-        let end_time = Instant::now() + duration;
-        let formatted_peers = format_peers(&*peers.lock().await);
+        tokio::time::sleep_until(deadline).await;
+        deadline += duration;
 
+        let formatted_peers = format_peers(&*peers.lock().await);
         if !formatted_peers.is_empty() {
             let msg = generate_random_message(&mut rng);
             log(&[
@@ -275,7 +277,6 @@ async fn producer_loop(
             ]);
             message_sender.send(msg.into()).unwrap();
         }
-        tokio::time::sleep_until(end_time).await;
     }
 }
 

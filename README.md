@@ -49,11 +49,10 @@ prints:
 ```
 00:00:00 - My address is "127.0.0.1:8082"
 00:00:00 - Connected to the peers at ["127.0.0.1:8080", "127.0.0.1:8081"]
-00:00:00 - Sending message [Fuy5qUgT5pXrWW1waxNZm5qYh5Xv1Nd2FemsWAuqx3Ci] to ["127.0.0.1:8080", "127.0.0.1:8081"]
-00:00:05 - Received message [JE2ugrMxvB3YQWsavF1vXjUPwjxFuXd1C5DEiVv3p7Zt] from 127.0.0.1:8080
-00:00:06 - Received message [DTgJWDQVakwuNt7aqNvSSo2of6SyaderbWBVVeFgK3HC] from 127.0.0.1:8081
-00:00:07 - Sending message [8SSpE31tMdjWjkzR8XwX7EyvNb2qtqNwWdwUdPdGaiZz] to ["127.0.0.1:8080", "127.0.0.1:8081"]
-00:00:10 - Received message [FZV2YiQpTWAkzBiMEKqQerGXBReUQNnnnrXqkfd7brPh] from 127.0.0.1:8080
-00:00:12 - Received message [Cx9LSryYpecH1qdxHrSHKdzRWpC2D1Sw6zqcSsir2URd] from 127.0.0.1:8081
-00:00:14 - Sending message [JBe7X6LzH36VPwUme24sUxLQ8P9vd8mxf17ha38qBnr6] to ["127.0.0.1:8080", "127.0.0.1:8081"]
+00:00:05 - Received message [HrG9EC2WCwsQmZY9QDJS7E2ucxDibKfoEUcTRPb8U62z] from 127.0.0.1:8080
+00:00:06 - Received message [6PwzjHWN12co5c62b9PfJMF2xLeqrGdKYZJCaqRJKE6a] from 127.0.0.1:8081
+00:00:07 - Sending message [BUxgwA17kLsCR3wVhA28CnwRoPnPxSJYVGpotZof9AHu] to ["127.0.0.1:8080", "127.0.0.1:8081"]
+00:00:10 - Received message [26T5m1u6R3L2N8SSM131bbG1jauFa3PzrYE9VqbGpbLZ] from 127.0.0.1:8080
+00:00:12 - Received message [9sCsEkNQBjsyguiL9nUtTY5PcN5pT4KGYhLEHov6tp5n] from 127.0.0.1:8081
+00:00:14 - Sending message [86v5dZDCYt1firckqdEipKX5rGeitiNZE1iVzZoCSTDE] to ["127.0.0.1:8080", "127.0.0.1:8081"]
 ```
