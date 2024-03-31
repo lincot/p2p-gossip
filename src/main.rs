@@ -71,7 +71,7 @@ async fn main() -> io::Result<()> {
         ClientConfig::with_native_roots()
     });
 
-    let (tx, _rx) = broadcast::channel::<String>(16);
+    let (tx, _rx) = broadcast::channel::<Arc<str>>(16);
 
     let peers = if let Some(connect) = args.connect {
         initial_connect(endpoint.clone(), connect, tx.clone()).await
@@ -112,7 +112,7 @@ async fn main() -> io::Result<()> {
 async fn accept_connection(
     connecting: Connecting,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    rx: Receiver<String>,
+    rx: Receiver<Arc<str>>,
 ) -> io::Result<Option<JoinHandle<()>>> {
     let connection = connecting.await?;
 
@@ -138,7 +138,7 @@ async fn accept_connection(
 async fn initial_connect(
     endpoint: Endpoint,
     connect: SocketAddr,
-    tx: Sender<String>,
+    tx: Sender<Arc<str>>,
 ) -> Arc<Mutex<HashSet<SocketAddr>>> {
     let peers = Arc::new(Mutex::new(HashSet::from([connect])));
     let failed_peers = Arc::new(Mutex::new(HashSet::new()));
@@ -149,7 +149,7 @@ async fn initial_connect(
 async fn outgoing_connect(
     endpoint: Endpoint,
     addr: SocketAddr,
-    tx: Sender<String>,
+    tx: Sender<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
 ) {
@@ -170,7 +170,7 @@ async fn outgoing_connect(
 fn outgoing_connect_inner(
     endpoint: Endpoint,
     addr: SocketAddr,
-    tx: Sender<String>,
+    tx: Sender<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
 ) -> BoxFuture<'static, Result<(), Box<dyn Error + Send + Sync>>> {
@@ -209,7 +209,7 @@ fn outgoing_connect_inner(
 async fn message_producing_loop(
     duration: Duration,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    tx: Sender<String>,
+    tx: Sender<Arc<str>>,
 ) {
     fn generate_random_message(rng: &mut impl Rng) -> String {
         let mut message = [0; 32];
@@ -245,7 +245,7 @@ async fn message_producing_loop(
                 &formatted_peers,
                 b"]",
             ]);
-            tx.send(msg).unwrap();
+            tx.send(msg.into()).unwrap();
         }
         tokio::time::sleep_until(end_time).await;
     }
@@ -253,7 +253,7 @@ async fn message_producing_loop(
 
 async fn handle_connection(
     connection: Connection,
-    rx: Receiver<String>,
+    rx: Receiver<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
 ) {
     let disconnect_reason = handle_connection_inner(&connection, rx).await;
@@ -268,7 +268,7 @@ async fn handle_connection(
 
 async fn handle_connection_inner(
     connection: &Connection,
-    mut rx: Receiver<String>,
+    mut rx: Receiver<Arc<str>>,
 ) -> ConnectionError {
     tokio::spawn({
         let connection = connection.clone();
@@ -302,7 +302,7 @@ async fn receiving_loop(connection: &Connection) -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn sending_loop(rx: &mut Receiver<String>, connection: &Connection) -> io::Result<()> {
+async fn sending_loop(rx: &mut Receiver<Arc<str>>, connection: &Connection) -> io::Result<()> {
     while let Ok(msg) = rx.recv().await {
         let mut send = connection.open_uni().await?;
         send.write_all(msg.as_bytes()).await?;
