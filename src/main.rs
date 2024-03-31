@@ -22,7 +22,6 @@ use rand_pcg::Pcg64Mcg;
 use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
 use tokio::{
     sync::{broadcast, Mutex},
-    task::JoinHandle,
     time::Instant,
 };
 
@@ -80,7 +79,7 @@ async fn main() -> io::Result<()> {
     };
 
     if let Some(period) = args.period {
-        tokio::spawn(message_producing_loop(
+        tokio::spawn(producer_loop(
             Duration::from_secs(period as _),
             peers.clone(),
             message_sender.clone(),
@@ -90,20 +89,11 @@ async fn main() -> io::Result<()> {
     log(&[b"My address is \"", addr.to_string().as_bytes(), b"\""]);
 
     while let Some(connecting) = endpoint.accept().await {
-        let remote_addr = connecting.remote_address();
-        match accept_connection(connecting, peers.clone(), message_sender.subscribe()).await {
-            Ok(Some(_)) => log(&[
-                b"Accepted a connection from ",
-                remote_addr.to_string().as_bytes(),
-            ]),
-            Err(e) => log(&[
-                b"Failed to accept a connection from ",
-                remote_addr.to_string().as_bytes(),
-                b", error: ",
-                e.to_string().as_bytes(),
-            ]),
-            Ok(None) => {}
-        }
+        tokio::spawn(handle_incoming_connection(
+            connecting,
+            peers.clone(),
+            message_sender.subscribe(),
+        ));
     }
 
     Ok(())
@@ -111,13 +101,39 @@ async fn main() -> io::Result<()> {
 
 /// Accepts an incoming `connection_in_progress`.
 ///
-/// Sends the list of current peers to the remote address
-/// and spawns `handle_connection`.
-async fn accept_connection(
+/// Sends the list of peers to the remote address
+/// and spawns `handle_connection`. Logs errors on failure.
+async fn handle_incoming_connection(
     connection_in_progress: Connecting,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     message_receiver: broadcast::Receiver<Arc<str>>,
-) -> AppResult<Option<JoinHandle<()>>> {
+) {
+    let remote_addr = connection_in_progress.remote_address();
+    match accept_connection(connection_in_progress, peers.clone()).await {
+        Ok(Some(connection)) => {
+            log(&[
+                b"Accepted a connection from ",
+                remote_addr.to_string().as_bytes(),
+            ]);
+            handle_connection(connection, message_receiver, peers).await;
+        }
+        Err(e) => log(&[
+            b"Failed to accept a connection from ",
+            remote_addr.to_string().as_bytes(),
+            b", error: ",
+            e.to_string().as_bytes(),
+        ]),
+        Ok(None) => {}
+    }
+}
+
+/// Accepts an incoming `connection_in_progress`.
+///
+/// Sends the list of peers to the remote address.
+async fn accept_connection(
+    connection_in_progress: Connecting,
+    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+) -> AppResult<Option<Connection>> {
     let connection = connection_in_progress.await?;
 
     if peers.lock().await.contains(&connection.remote_address()) {
@@ -132,11 +148,7 @@ async fn accept_connection(
     send.finish().await?;
 
     peers.lock().await.insert(connection.remote_address());
-    Ok(Some(tokio::spawn(handle_connection(
-        connection,
-        message_receiver,
-        peers.clone(),
-    ))))
+    Ok(Some(connection))
 }
 
 /// Connects to `first_peer` and then to all the other peers.
@@ -158,7 +170,7 @@ async fn initial_connect(
     peers
 }
 
-/// Connects to a node with address `addr`. Logs the error on failure.
+/// Connects to a node with address `addr`. Logs errors on failure.
 async fn outgoing_connect(
     endpoint: Endpoint,
     addr: SocketAddr,
@@ -231,7 +243,7 @@ fn outgoing_connect_inner(
 }
 
 /// Once in `duration`, sends a random message to `message_sender`.
-async fn message_producing_loop(
+async fn producer_loop(
     duration: Duration,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     message_sender: broadcast::Sender<Arc<str>>,
@@ -276,7 +288,7 @@ async fn message_producing_loop(
     }
 }
 
-/// Handles communication via `connection`. Logs the error on disconnection.
+/// Handles communication via `connection`. Logs errors on disconnection.
 async fn handle_connection(
     connection: Connection,
     message_receiver: broadcast::Receiver<Arc<str>>,
