@@ -132,18 +132,20 @@ async fn accept_connection(
 ) -> AppResult<Option<Connection>> {
     let connection = connection_in_progress.await?;
 
-    if peers.lock().await.contains(&connection.remote_address()) {
+    let mut peers_lock = peers.lock().await;
+    if peers_lock.contains(&connection.remote_address()) {
         connection.close(1u8.into(), b"already connected");
         return Ok(None);
     }
 
     let mut send = connection.open_uni().await?;
-    for peer in &*peers.lock().await {
+    for peer in &*peers_lock {
         send.write_all(&bincode::serialize(peer).unwrap()).await?;
     }
+    peers_lock.insert(connection.remote_address());
+    drop(peers_lock);
     send.finish().await?;
 
-    peers.lock().await.insert(connection.remote_address());
     Ok(Some(connection))
 }
 

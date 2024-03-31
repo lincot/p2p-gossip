@@ -39,8 +39,8 @@ Options:
 ## Example
 
 ```sh
-./p2p-gossip --skip-server-verification --period=5 --port=8080 &>/dev/null & sleep 0.1
-./p2p-gossip --skip-server-verification --period=6 --port=8081 --connect="127.0.0.1:8080" &>/dev/null & sleep 0.1
+./p2p-gossip --skip-server-verification --period=5 --port=8080 &>/dev/null &
+./p2p-gossip --skip-server-verification --period=6 --port=8081 --connect="127.0.0.1:8080" &>/dev/null &
 ./p2p-gossip --skip-server-verification --period=7 --port=8082 --connect="127.0.0.1:8080"
 ```
 
@@ -49,11 +49,11 @@ prints:
 ```
 00:00:00 - My address is "127.0.0.1:8082"
 00:00:00 - Connected to the peers at ["127.0.0.1:8080", "127.0.0.1:8081"]
-00:00:00 - Sending message [6rMPGeRF5uVUuXtz5UBb6dorKFCZRfB2AarBt9KiQa8o] to ["127.0.0.1:8080", "127.0.0.1:8081"]
-00:00:04 - Received message [BRz3XcSQy3FLu7KugEXEkspbuknEHh1VG6qGaVmGxEkm] from 127.0.0.1:8080
-00:00:05 - Received message [EdtdZTZ5eBaMAAGjTxYSVGEL8eoNBpsBn11kK1AyasFK] from 127.0.0.1:8081
-00:00:07 - Sending message [GZMYwhCohQYCyQaHp7mgNAMvaS46p1GD8KWxLnqh3vvU] to ["127.0.0.1:8080", "127.0.0.1:8081"]
-00:00:09 - Received message [HGyi95gKHFhzRZvbZbotYzYysFqpRUD9r5Bgxvt5vt5S] from 127.0.0.1:8080
-00:00:11 - Received message [9Mk3yKvyCfvpmfaxv6mNVmLbRXz8mMPZdqbvvcRqfxFJ] from 127.0.0.1:8081
-00:00:14 - Sending message [FUdN353J3q8EZkgcxKba3s2R6yyn6CEr3amyAnebpH7R] to ["127.0.0.1:8080", "127.0.0.1:8081"]
+00:00:00 - Sending message [Fuy5qUgT5pXrWW1waxNZm5qYh5Xv1Nd2FemsWAuqx3Ci] to ["127.0.0.1:8080", "127.0.0.1:8081"]
+00:00:05 - Received message [JE2ugrMxvB3YQWsavF1vXjUPwjxFuXd1C5DEiVv3p7Zt] from 127.0.0.1:8080
+00:00:06 - Received message [DTgJWDQVakwuNt7aqNvSSo2of6SyaderbWBVVeFgK3HC] from 127.0.0.1:8081
+00:00:07 - Sending message [8SSpE31tMdjWjkzR8XwX7EyvNb2qtqNwWdwUdPdGaiZz] to ["127.0.0.1:8080", "127.0.0.1:8081"]
+00:00:10 - Received message [FZV2YiQpTWAkzBiMEKqQerGXBReUQNnnnrXqkfd7brPh] from 127.0.0.1:8080
+00:00:12 - Received message [Cx9LSryYpecH1qdxHrSHKdzRWpC2D1Sw6zqcSsir2URd] from 127.0.0.1:8081
+00:00:14 - Sending message [JBe7X6LzH36VPwUme24sUxLQ8P9vd8mxf17ha38qBnr6] to ["127.0.0.1:8080", "127.0.0.1:8081"]
 ```
