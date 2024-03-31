@@ -1,8 +1,6 @@
 #![feature(write_all_vectored)]
 #![feature(lazy_cell)]
 
-// TODO: add comments
-
 mod config;
 mod error;
 mod log;
@@ -23,30 +21,35 @@ use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
 use tokio::{
-    sync::{
-        broadcast::{self, Receiver, Sender},
-        Mutex,
-    },
+    sync::{broadcast, Mutex},
     task::JoinHandle,
     time::Instant,
 };
 
+/// Program command line arguments.
 #[derive(Parser, Debug)]
 struct Args {
+    /// Period in seconds, once in this period a random message is sent to all peers.
     #[arg(long)]
     period: Option<usize>,
-    #[arg(long)]
-    port: u16,
-    #[arg(long)]
-    connect: Option<SocketAddr>,
-    #[arg(long, action)]
-    skip_server_verification: bool,
-    #[arg(long)]
-    cert: Option<PathBuf>,
-    #[arg(long)]
-    key: Option<PathBuf>,
+    /// IP to run on.
     #[arg(long)]
     ip: Option<IpAddr>,
+    /// Port to run on.
+    #[arg(long)]
+    port: u16,
+    /// The address of the first node to connect to.
+    #[arg(long)]
+    connect: Option<SocketAddr>,
+    /// Do not verify peers' TLS certificates.
+    #[arg(long, action)]
+    skip_server_verification: bool,
+    /// Path to the certificate PEM file.
+    #[arg(long)]
+    cert: Option<PathBuf>,
+    /// Path to the secret key PEM file.
+    #[arg(long)]
+    key: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -68,10 +71,10 @@ async fn main() -> io::Result<()> {
         ClientConfig::with_native_roots()
     });
 
-    let (tx, _rx) = broadcast::channel::<Arc<str>>(16);
+    let (message_sender, _rx) = broadcast::channel::<Arc<str>>(16);
 
     let peers = if let Some(connect) = args.connect {
-        initial_connect(endpoint.clone(), connect, tx.clone()).await
+        initial_connect(endpoint.clone(), connect, message_sender.clone()).await
     } else {
         Arc::new(Mutex::new(HashSet::new()))
     };
@@ -80,7 +83,7 @@ async fn main() -> io::Result<()> {
         tokio::spawn(message_producing_loop(
             Duration::from_secs(period as _),
             peers.clone(),
-            tx.clone(),
+            message_sender.clone(),
         ));
     }
 
@@ -88,7 +91,7 @@ async fn main() -> io::Result<()> {
 
     while let Some(connecting) = endpoint.accept().await {
         let remote_addr = connecting.remote_address();
-        match accept_connection(connecting, peers.clone(), tx.subscribe()).await {
+        match accept_connection(connecting, peers.clone(), message_sender.subscribe()).await {
             Ok(Some(_)) => log(&[
                 b"Accepted a connection from ",
                 remote_addr.to_string().as_bytes(),
@@ -106,12 +109,16 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
+/// Accepts an incoming `connection_in_progress`.
+///
+/// Sends the list of current peers to the remote address
+/// and spawns `handle_connection`.
 async fn accept_connection(
-    connecting: Connecting,
+    connection_in_progress: Connecting,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    rx: Receiver<Arc<str>>,
+    message_receiver: broadcast::Receiver<Arc<str>>,
 ) -> AppResult<Option<JoinHandle<()>>> {
-    let connection = connecting.await?;
+    let connection = connection_in_progress.await?;
 
     if peers.lock().await.contains(&connection.remote_address()) {
         connection.close(1u8.into(), b"already connected");
@@ -127,31 +134,46 @@ async fn accept_connection(
     peers.lock().await.insert(connection.remote_address());
     Ok(Some(tokio::spawn(handle_connection(
         connection,
-        rx,
+        message_receiver,
         peers.clone(),
     ))))
 }
 
+/// Connects to `first_peer` and then to all the other peers.
 async fn initial_connect(
     endpoint: Endpoint,
-    connect: SocketAddr,
-    tx: Sender<Arc<str>>,
+    first_peer: SocketAddr,
+    message_sender: broadcast::Sender<Arc<str>>,
 ) -> Arc<Mutex<HashSet<SocketAddr>>> {
-    let peers = Arc::new(Mutex::new(HashSet::from([connect])));
+    let peers = Arc::new(Mutex::new(HashSet::from([first_peer])));
     let failed_peers = Arc::new(Mutex::new(HashSet::new()));
-    outgoing_connect(endpoint, connect, tx, peers.clone(), failed_peers).await;
+    outgoing_connect(
+        endpoint,
+        first_peer,
+        message_sender,
+        peers.clone(),
+        failed_peers,
+    )
+    .await;
     peers
 }
 
+/// Connects to a node with address `addr`. Logs the error on failure.
 async fn outgoing_connect(
     endpoint: Endpoint,
     addr: SocketAddr,
-    tx: Sender<Arc<str>>,
+    message_sender: broadcast::Sender<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
 ) {
-    if let Err(e) =
-        outgoing_connect_inner(endpoint, addr, tx, peers.clone(), failed_peers.clone()).await
+    if let Err(e) = outgoing_connect_inner(
+        endpoint,
+        addr,
+        message_sender,
+        peers.clone(),
+        failed_peers.clone(),
+    )
+    .await
     {
         log(&[
             b"Failed to connect to ",
@@ -164,10 +186,11 @@ async fn outgoing_connect(
     }
 }
 
+/// Connects to a node with address `addr`.
 fn outgoing_connect_inner(
     endpoint: Endpoint,
     addr: SocketAddr,
-    tx: Sender<Arc<str>>,
+    message_sender: broadcast::Sender<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
 ) -> BoxFuture<'static, AppResult<()>> {
@@ -185,7 +208,7 @@ fn outgoing_connect_inner(
                 tokio::spawn(outgoing_connect(
                     endpoint.clone(),
                     peer,
-                    tx.clone(),
+                    message_sender.clone(),
                     peers.clone(),
                     failed_peers.clone(),
                 ));
@@ -197,16 +220,21 @@ fn outgoing_connect_inner(
             };
         }
         drop((peers_lock, failed_peers_lock));
-        tokio::spawn(handle_connection(connection, tx.subscribe(), peers));
+        tokio::spawn(handle_connection(
+            connection,
+            message_sender.subscribe(),
+            peers,
+        ));
         Ok(())
     }
     .boxed()
 }
 
+/// Once in `duration`, sends a random message to `message_sender`.
 async fn message_producing_loop(
     duration: Duration,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    tx: Sender<Arc<str>>,
+    message_sender: broadcast::Sender<Arc<str>>,
 ) {
     fn generate_random_message(rng: &mut impl Rng) -> String {
         let mut message = [0; 32];
@@ -242,18 +270,19 @@ async fn message_producing_loop(
                 formatted_peers.as_bytes(),
                 b"]",
             ]);
-            tx.send(msg.into()).unwrap();
+            message_sender.send(msg.into()).unwrap();
         }
         tokio::time::sleep_until(end_time).await;
     }
 }
 
+/// Handles communication via `connection`. Logs the error on disconnection.
 async fn handle_connection(
     connection: Connection,
-    rx: Receiver<Arc<str>>,
+    message_receiver: broadcast::Receiver<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
 ) {
-    let disconnect_reason = handle_connection_inner(&connection, rx).await;
+    let disconnect_reason = handle_connection_inner(&connection, message_receiver).await;
     log(&[
         b"Closed connection to ",
         connection.remote_address().to_string().as_bytes(),
@@ -263,16 +292,17 @@ async fn handle_connection(
     peers.lock().await.remove(&connection.remote_address());
 }
 
+/// Handles communication via `connection`.
 async fn handle_connection_inner(
     connection: &Connection,
-    mut rx: Receiver<Arc<str>>,
+    mut message_receiver: broadcast::Receiver<Arc<str>>,
 ) -> ConnectionError {
     tokio::spawn({
         let connection = connection.clone();
-        async move { sending_loop(&mut rx, &connection).await }
+        async move { sender_loop(&mut message_receiver, &connection).await }
     });
     loop {
-        let receiving_res = receiving_loop(connection).await;
+        let receiving_res = receiver_loop(connection).await;
         if let Some(reason) = connection.close_reason() {
             return reason;
         }
@@ -285,7 +315,8 @@ async fn handle_connection_inner(
     }
 }
 
-async fn receiving_loop(connection: &Connection) -> AppResult<()> {
+/// Logs messages received from `connection`.
+async fn receiver_loop(connection: &Connection) -> AppResult<()> {
     let peer_addr = connection.remote_address().to_string();
     loop {
         let mut recv = connection.accept_uni().await?;
@@ -299,8 +330,12 @@ async fn receiving_loop(connection: &Connection) -> AppResult<()> {
     }
 }
 
-async fn sending_loop(rx: &mut Receiver<Arc<str>>, connection: &Connection) -> AppResult<()> {
-    while let Ok(msg) = rx.recv().await {
+/// Sends messages received from `message_receiver` to `connection`.
+async fn sender_loop(
+    message_receiver: &mut broadcast::Receiver<Arc<str>>,
+    connection: &Connection,
+) -> AppResult<()> {
+    while let Ok(msg) = message_receiver.recv().await {
         let mut send = connection.open_uni().await?;
         send.write_all(msg.as_bytes()).await?;
         send.finish().await?;
