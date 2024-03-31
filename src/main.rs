@@ -4,6 +4,7 @@
 // TODO: add comments
 
 mod config;
+mod error;
 mod log;
 
 use clap::Parser;
@@ -14,18 +15,13 @@ use core::{
     time::Duration,
 };
 use dns_lookup::lookup_addr;
+use error::AppResult;
 use futures::{future::BoxFuture, FutureExt};
 use log::log;
 use quinn::{ClientConfig, Connecting, Connection, ConnectionError, Endpoint, ServerConfig};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
-use std::{
-    collections::HashSet,
-    error::Error,
-    io::{self},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
 use tokio::{
     sync::{
         broadcast::{self, Receiver, Sender},
@@ -114,7 +110,7 @@ async fn accept_connection(
     connecting: Connecting,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     rx: Receiver<Arc<str>>,
-) -> io::Result<Option<JoinHandle<()>>> {
+) -> AppResult<Option<JoinHandle<()>>> {
     let connection = connecting.await?;
 
     if peers.lock().await.contains(&connection.remote_address()) {
@@ -174,7 +170,7 @@ fn outgoing_connect_inner(
     tx: Sender<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
     failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
-) -> BoxFuture<'static, Result<(), Box<dyn Error + Send + Sync>>> {
+) -> BoxFuture<'static, AppResult<()>> {
     async move {
         let name = lookup_addr(&addr.ip())?;
         let connection = endpoint.connect(addr, &name)?.await?;
@@ -289,7 +285,7 @@ async fn handle_connection_inner(
     }
 }
 
-async fn receiving_loop(connection: &Connection) -> Result<(), Box<dyn Error>> {
+async fn receiving_loop(connection: &Connection) -> AppResult<()> {
     let peer_addr = connection.remote_address().to_string();
     loop {
         let mut recv = connection.accept_uni().await?;
@@ -303,7 +299,7 @@ async fn receiving_loop(connection: &Connection) -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn sending_loop(rx: &mut Receiver<Arc<str>>, connection: &Connection) -> io::Result<()> {
+async fn sending_loop(rx: &mut Receiver<Arc<str>>, connection: &Connection) -> AppResult<()> {
     while let Ok(msg) = rx.recv().await {
         let mut send = connection.open_uni().await?;
         send.write_all(msg.as_bytes()).await?;

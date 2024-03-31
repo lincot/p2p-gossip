@@ -19,3 +19,4 @@ digital = { git = "https://github.com/lincot/rusted-katana" }
 unchecked-core = { git = "https://github.com/lincot/rusted-katana" }
 dns-lookup = "2.0.4"
 rustls-pemfile = "1.0.4"
+thiserror = "1.0.58"
