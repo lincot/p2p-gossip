@@ -48,6 +48,7 @@ prints:
 
 ```
 00:00:00 - My address is "127.0.0.1:8082"
+00:00:00 - Connected to the peers at ["127.0.0.1:8080", "127.0.0.1:8081"]
 00:00:00 - Sending message [6rMPGeRF5uVUuXtz5UBb6dorKFCZRfB2AarBt9KiQa8o] to ["127.0.0.1:8080", "127.0.0.1:8081"]
 00:00:04 - Received message [BRz3XcSQy3FLu7KugEXEkspbuknEHh1VG6qGaVmGxEkm] from 127.0.0.1:8080
 00:00:05 - Received message [EdtdZTZ5eBaMAAGjTxYSVGEL8eoNBpsBn11kK1AyasFK] from 127.0.0.1:8081

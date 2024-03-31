@@ -10,6 +10,7 @@ use config::{configure_client_without_server_verification, read_certs_from_file}
 use core::{
     fmt::Write,
     net::{IpAddr, SocketAddr},
+    ops::{Deref, DerefMut},
     time::Duration,
 };
 use dns_lookup::lookup_addr;
@@ -21,7 +22,7 @@ use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
 use tokio::{
-    sync::{broadcast, Mutex},
+    sync::{broadcast, oneshot, Mutex},
     time::Instant,
 };
 
@@ -65,6 +66,8 @@ async fn main() -> io::Result<()> {
         ClientConfig::with_native_roots()
     });
 
+    log(&[b"My address is \"", addr.to_string().as_bytes(), b"\""]);
+
     let (message_sender, _rx) = broadcast::channel::<Arc<str>>(16);
 
     let peers = if let Some(connect) = args.connect {
@@ -80,8 +83,6 @@ async fn main() -> io::Result<()> {
             message_sender.clone(),
         ));
     }
-
-    log(&[b"My address is \"", addr.to_string().as_bytes(), b"\""]);
 
     while let Some(connecting) = endpoint.accept().await {
         tokio::spawn(handle_incoming_connection(
@@ -153,15 +154,21 @@ async fn initial_connect(
     message_sender: broadcast::Sender<Arc<str>>,
 ) -> Arc<Mutex<HashSet<SocketAddr>>> {
     let peers = Arc::new(Mutex::new(HashSet::from([first_peer])));
-    let failed_peers = Arc::new(Mutex::new(HashSet::new()));
+    let (failed_peers, finished) = NotifyOnDrop::create(Mutex::new(HashSet::new()));
     outgoing_connect(
         endpoint,
         first_peer,
         message_sender,
         peers.clone(),
-        failed_peers,
+        Arc::new(failed_peers),
     )
     .await;
+    let _ = finished.await;
+    log(&[
+        b"Connected to the peers at [",
+        format_peers(&*peers.lock().await).as_bytes(),
+        b"]",
+    ]);
     peers
 }
 
@@ -171,7 +178,7 @@ async fn outgoing_connect(
     addr: SocketAddr,
     message_sender: broadcast::Sender<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    failed_peers: Arc<NotifyOnDrop<Mutex<HashSet<SocketAddr>>>>,
 ) {
     if let Err(e) = outgoing_connect_inner(
         endpoint,
@@ -199,7 +206,7 @@ fn outgoing_connect_inner(
     addr: SocketAddr,
     message_sender: broadcast::Sender<Arc<str>>,
     peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    failed_peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    failed_peers: Arc<NotifyOnDrop<Mutex<HashSet<SocketAddr>>>>,
 ) -> BoxFuture<'static, AppResult<()>> {
     async move {
         let name = lookup_addr(&addr.ip())?;
@@ -247,19 +254,6 @@ async fn producer_loop(
         let mut message = [0; 32];
         rng.fill_bytes(&mut message);
         bs58::encode(message).into_string()
-    }
-
-    fn format_peers(peers: &HashSet<SocketAddr>) -> String {
-        // with IPv6, the length may be greater than the capacity provided
-        let mut formatted_peers =
-            String::with_capacity("\"255.255.255.255:65535\", ".len() * peers.len());
-        for (i, addr) in peers.iter().enumerate() {
-            if i != 0 {
-                formatted_peers.push_str(", ");
-            }
-            write!(&mut formatted_peers, "\"{addr}\"").unwrap();
-        }
-        formatted_peers
     }
 
     let mut rng = Pcg64Mcg::from_entropy();
@@ -355,6 +349,48 @@ async fn sender_loop(
 const IPV4_SERIALIZED_LEN: usize = 10;
 /// The length of a `SocketAddr::V6`, serialized with bincode.
 const IPV6_SERIALIZED_LEN: usize = 22;
+
+fn format_peers(peers: &HashSet<SocketAddr>) -> String {
+    // with IPv6, the length may be greater than the capacity provided
+    let mut formatted_peers =
+        String::with_capacity("\"255.255.255.255:65535\", ".len() * peers.len());
+    for (i, addr) in peers.iter().enumerate() {
+        if i != 0 {
+            formatted_peers.push_str(", ");
+        }
+        write!(&mut formatted_peers, "\"{addr}\"").unwrap();
+    }
+    formatted_peers
+}
+
+/// A struct holding an `oneshot::Sender` that never sends,
+/// effectively allowing the thread owning the receiver
+/// to await until the value is dropped.
+struct NotifyOnDrop<T> {
+    val: T,
+    _tx: oneshot::Sender<()>,
+}
+
+impl<T> NotifyOnDrop<T> {
+    fn create(val: T) -> (Self, oneshot::Receiver<()>) {
+        let (tx, rx) = oneshot::channel();
+        (Self { val, _tx: tx }, rx)
+    }
+}
+
+impl<T> Deref for NotifyOnDrop<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.val
+    }
+}
+
+impl<T> DerefMut for NotifyOnDrop<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.val
+    }
+}
 
 #[cfg(test)]
 mod tests {
