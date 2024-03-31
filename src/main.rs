@@ -25,7 +25,8 @@ use tokio::{
     time::Instant,
 };
 
-/// Program command line arguments.
+// this doc comment is printed at the top of the help message
+/// P2P gossip peer.
 #[derive(Parser, Debug)]
 struct Args {
     /// Period in seconds, once in this period a random message is sent to all peers.
