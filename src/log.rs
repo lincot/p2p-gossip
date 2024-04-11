@@ -1,4 +1,3 @@
-use digital::{MaxLenBase10, WriteNumUnchecked};
 use std::{
     io::{stdout, Write},
     sync::OnceLock,
@@ -35,29 +34,12 @@ pub fn log(bufs: &[&[u8]]) {
 /// ```
 /// assert_eq!(format_duration(5 * 60 * 60 + 12 * 60 + 7), "05:12:07");
 /// ```
-fn format_duration(seconds: u64) -> heapless::String<{ u64::MAX_LEN_BASE10 + ":00:00".len() }> {
-    let mut res = heapless::Vec::new();
-
+fn format_duration(seconds: u64) -> String {
     let hours = seconds / 3600;
     let minutes = seconds % 3600 / 60;
     let seconds = seconds % 60;
 
-    // SAFETY: buffer length specified in output type is sufficient,
-    // all written characters are ASCII
-    unsafe {
-        if hours < 10 {
-            res.push_unchecked(b'0');
-        }
-        res.write_num_unchecked(hours, 10, false, false);
-        res.push_unchecked(b':');
-        res.push_unchecked((b'0' + (minutes / 10) as u8) as _);
-        res.push_unchecked((b'0' + (minutes % 10) as u8) as _);
-        res.push_unchecked(b':');
-        res.push_unchecked((b'0' + (seconds / 10) as u8) as _);
-        res.push_unchecked((b'0' + (seconds % 10) as u8) as _);
-
-        heapless::String::from_utf8_unchecked(res)
-    }
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
 #[cfg(test)]
@@ -66,6 +48,7 @@ mod tests {
 
     #[test]
     fn test_format_duration() {
+        assert_eq!(format_duration(333 * 60 * 60 + 22 * 60 + 1), "333:22:01");
         assert_eq!(format_duration(5 * 60 * 60 + 12 * 60 + 7), "05:12:07");
         assert_eq!(format_duration(0), "00:00:00");
         assert_eq!(format_duration(67), "00:01:07");
