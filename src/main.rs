@@ -1,6 +1,3 @@
-#![feature(write_all_vectored)]
-#![feature(lazy_cell)]
-
 mod config;
 mod error;
 mod log;

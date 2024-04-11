@@ -1,10 +1,9 @@
 use digital::{MaxLenBase10, WriteNumUnchecked};
 use std::{
-    io::{stdout, IoSlice, Write},
-    sync::LazyLock,
+    io::{stdout, Write},
+    sync::OnceLock,
 };
 use tokio::time::Instant;
-use unchecked_core::PushUnchecked;
 
 /// Prints `bufs` to stdout, formatted with the time
 /// elapsed since the program was started.
@@ -16,22 +15,17 @@ use unchecked_core::PushUnchecked;
 /// log(&[b"one", b"two"]);
 /// ```
 pub fn log(bufs: &[&[u8]]) {
-    static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
+    static START_TIME: OnceLock<Instant> = OnceLock::new();
 
-    let time = format_duration(START_TIME.elapsed().as_secs());
+    let time = format_duration(START_TIME.get_or_init(Instant::now).elapsed().as_secs());
 
-    let mut ioslices = Vec::with_capacity(bufs.len() + 3);
-    // SAFETY: it's initialized with sufficient capacity
-    unsafe {
-        ioslices.push_unchecked(IoSlice::new(time.as_bytes()));
-        ioslices.push_unchecked(IoSlice::new(b" - "));
-        for buf in bufs {
-            ioslices.push_unchecked(IoSlice::new(buf));
-        }
-        ioslices.push_unchecked(IoSlice::new(b"\n"));
+    let mut out = stdout();
+    out.write_all(time.as_bytes()).unwrap();
+    out.write_all(b" - ").unwrap();
+    for buf in bufs {
+        out.write_all(buf).unwrap();
     }
-
-    stdout().write_all_vectored(&mut ioslices).unwrap();
+    out.write_all(b"\n").unwrap();
 }
 
 /// Formats a duration `seconds` in HH:MM:SS format.
