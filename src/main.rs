@@ -1,13 +1,12 @@
 mod config;
 mod error;
 mod log;
+mod utils;
 
 use clap::Parser;
 use config::{configure_client_without_server_verification, read_certs_from_file};
 use core::{
-    fmt::Write,
     net::{IpAddr, SocketAddr},
-    ops::{Deref, DerefMut},
     time::Duration,
 };
 use dns_lookup::lookup_addr;
@@ -20,9 +19,10 @@ use rand_pcg::Pcg64Mcg;
 use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
 use tokio::{
     signal,
-    sync::{broadcast, oneshot, Mutex},
+    sync::{broadcast, Mutex},
     time::Instant,
 };
+use utils::{deserialize_addresses, format_peers, NotifyOnDrop};
 
 // this doc comment is printed at the top of the help message
 /// P2P gossip peer.
@@ -240,9 +240,7 @@ fn outgoing_connect_inner(
         let data = recv.read_to_end(10_000).await?;
         let (mut peers_lock, failed_peers_lock) = (peers.lock().await, failed_peers.lock().await);
         // deserialize them one by one to avoid creating a temporary array
-        let mut i = 0;
-        while i + 10 <= data.len() {
-            let peer = bincode::deserialize(&data[i..])?;
+        for peer in deserialize_addresses(&data) {
             if !failed_peers_lock.contains(&peer) && peers_lock.insert(peer) {
                 tokio::spawn(outgoing_connect(
                     endpoint.clone(),
@@ -252,11 +250,6 @@ fn outgoing_connect_inner(
                     failed_peers.clone(),
                 ));
             }
-            i += if peer.is_ipv4() {
-                IPV4_SERIALIZED_LEN
-            } else {
-                IPV6_SERIALIZED_LEN
-            };
         }
         drop((peers_lock, failed_peers_lock));
         tokio::spawn(handle_connection(
@@ -369,83 +362,4 @@ async fn sender_loop(
     }
 
     Ok(())
-}
-
-/// The length of a `SocketAddr::V4`, serialized with bincode.
-const IPV4_SERIALIZED_LEN: usize = 10;
-/// The length of a `SocketAddr::V6`, serialized with bincode.
-const IPV6_SERIALIZED_LEN: usize = 22;
-
-fn format_peers(peers: &HashSet<SocketAddr>) -> String {
-    // with IPv6, the length may be greater than the capacity provided
-    let mut formatted_peers =
-        String::with_capacity("\"255.255.255.255:65535\", ".len() * peers.len());
-    for (i, addr) in peers.iter().enumerate() {
-        if i != 0 {
-            formatted_peers.push_str(", ");
-        }
-        write!(&mut formatted_peers, "\"{addr}\"").unwrap();
-    }
-    formatted_peers
-}
-
-/// A struct holding an `oneshot::Sender` that never sends,
-/// effectively allowing the thread owning the receiver
-/// to await until the value is dropped.
-struct NotifyOnDrop<T> {
-    val: T,
-    _tx: oneshot::Sender<()>,
-}
-
-impl<T> NotifyOnDrop<T> {
-    fn create(val: T) -> (Self, oneshot::Receiver<()>) {
-        let (tx, rx) = oneshot::channel();
-        (Self { val, _tx: tx }, rx)
-    }
-}
-
-impl<T> Deref for NotifyOnDrop<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.val
-    }
-}
-
-impl<T> DerefMut for NotifyOnDrop<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.val
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::net::{Ipv4Addr, Ipv6Addr};
-
-    #[test]
-    fn test_ipv4_serialized_len() {
-        assert_eq!(
-            IPV4_SERIALIZED_LEN,
-            bincode::serialize(&SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-                8080,
-            ))
-            .unwrap()
-            .len()
-        )
-    }
-
-    #[test]
-    fn test_ipv6_serialized_len() {
-        assert_eq!(
-            IPV6_SERIALIZED_LEN,
-            bincode::serialize(&SocketAddr::new(
-                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2ff)),
-                8080,
-            ))
-            .unwrap()
-            .len()
-        );
-    }
 }
