@@ -22,6 +22,7 @@ use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
 use tokio::{
+    signal,
     sync::{broadcast, oneshot, Mutex},
     time::Instant,
 };
@@ -66,17 +67,34 @@ async fn main() -> io::Result<()> {
         ClientConfig::with_native_roots()
     });
 
+    tokio::spawn(run_peer(endpoint.clone(), addr, args.connect, args.period));
+
+    signal::ctrl_c().await?;
+    log(&[b"Shutting down"]);
+    endpoint.close(2u8.into(), b"closed");
+    endpoint.wait_idle().await;
+
+    Ok(())
+}
+
+/// Runs a new peer on `endpoint`.
+async fn run_peer(
+    endpoint: Endpoint,
+    addr: SocketAddr,
+    connect: Option<SocketAddr>,
+    period: Option<usize>,
+) {
     log(&[b"My address is \"", addr.to_string().as_bytes(), b"\""]);
 
     let (message_sender, _rx) = broadcast::channel::<Arc<str>>(16);
 
-    let peers = if let Some(connect) = args.connect {
+    let peers = if let Some(connect) = connect {
         initial_connect(endpoint.clone(), connect, message_sender.clone()).await
     } else {
         Arc::new(Mutex::new(HashSet::new()))
     };
 
-    if let Some(period) = args.period {
+    if let Some(period) = period {
         tokio::spawn(producer_loop(
             Duration::from_secs(period as _),
             peers.clone(),
@@ -84,6 +102,16 @@ async fn main() -> io::Result<()> {
         ));
     }
 
+    accept_loop(endpoint, peers, message_sender).await;
+}
+
+/// Continuesly accepts incoming connections on `Endpoint`
+/// and spawns `handle_incoming_connection` on them
+async fn accept_loop(
+    endpoint: Endpoint,
+    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    message_sender: broadcast::Sender<Arc<str>>,
+) {
     while let Some(connecting) = endpoint.accept().await {
         tokio::spawn(handle_incoming_connection(
             connecting,
@@ -91,8 +119,6 @@ async fn main() -> io::Result<()> {
             message_sender.subscribe(),
         ));
     }
-
-    Ok(())
 }
 
 /// Accepts an incoming `connection_in_progress`.
