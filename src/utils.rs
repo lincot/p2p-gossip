@@ -6,31 +6,26 @@ use core::{
 use std::collections::HashSet;
 use tokio::sync::oneshot;
 
-pub struct SocketAddrParser<'a> {
+pub struct SocketAddrDeserializer<'a> {
     data: &'a [u8],
-    i: usize,
 }
 
-impl<'a> Iterator for SocketAddrParser<'a> {
+impl<'a> Iterator for SocketAddrDeserializer<'a> {
     type Item = SocketAddr;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.i + 10 > self.data.len() {
-            return None;
-        }
-
-        let peer: SocketAddr = bincode::deserialize(&self.data[self.i..]).ok()?;
-        self.i += if peer.is_ipv4() {
+        let peer: SocketAddr = bincode::deserialize(&self.data).ok()?;
+        self.data = &self.data[if peer.is_ipv4() {
             IPV4_SERIALIZED_LEN
         } else {
             IPV6_SERIALIZED_LEN
-        };
+        }..];
         Some(peer)
     }
 }
 
-pub fn deserialize_addresses<'a>(data: &'a [u8]) -> SocketAddrParser<'a> {
-    SocketAddrParser { data, i: 0 }
+pub fn deserialize_addresses(data: &[u8]) -> SocketAddrDeserializer {
+    SocketAddrDeserializer { data }
 }
 
 /// The length of a `SocketAddr::V4`, serialized with bincode.
