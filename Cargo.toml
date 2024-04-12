@@ -19,3 +19,6 @@ unchecked-core = { git = "https://github.com/lincot/rusted-katana" }
 dns-lookup = "2.0.4"
 rustls-pemfile = "1.0.4"
 thiserror = "1.0.58"
+
+[dev-dependencies]
+assert_cmd = "2.0.14"
