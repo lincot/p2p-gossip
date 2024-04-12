@@ -18,7 +18,7 @@ pub fn log(bufs: &[&[u8]]) {
 
     let time = format_duration(START_TIME.get_or_init(Instant::now).elapsed().as_secs());
 
-    let mut out = stdout();
+    let mut out = stdout().lock();
     out.write_all(time.as_bytes()).unwrap();
     out.write_all(b" - ").unwrap();
     for buf in bufs {
