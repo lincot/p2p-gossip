@@ -68,7 +68,7 @@ async fn main() -> io::Result<()> {
 
     signal::ctrl_c().await?;
     log(&[b"Shutting down"]);
-    endpoint.close(2u8.into(), b"closed");
+    endpoint.close(2u8.into(), b"shutdown");
     endpoint.wait_idle().await;
 
     Ok(())
