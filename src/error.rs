@@ -1,4 +1,4 @@
-use quinn::{ConnectError, ConnectionError, ReadToEndError, WriteError};
+use quinn::{ApplicationClose, ConnectError, ConnectionError, ReadToEndError, WriteError};
 use std::io;
 use thiserror::Error;
 
@@ -19,3 +19,20 @@ pub enum AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+pub fn is_already_open_or_locally_closed_error(e: &AppError) -> bool {
+    if let AppError::ConnectionError(e) = e {
+        is_already_open_or_locally_closed_reason(e)
+    } else {
+        false
+    }
+}
+
+pub fn is_already_open_or_locally_closed_reason(e: &ConnectionError) -> bool {
+    if let ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. }) = e {
+        if error_code == &1u8.into() {
+            return true;
+        }
+    }
+    e == &ConnectionError::LocallyClosed
+}

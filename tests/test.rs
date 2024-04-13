@@ -238,26 +238,6 @@ fn happy_3_peers() -> io::Result<()> {
 
     let line = lines[0].next().expect("expected a line");
     assert!(line.ends_with("Shutting down"), "bad line:\n{line}");
-    let line = lines[0].next().expect("expected a line");
-    let closed_8081 = line.ends_with("Closed connection to 127.0.0.1:8081, reason: closed");
-    if !closed_8081 {
-        assert!(
-            line.ends_with("Closed connection to 127.0.0.1:8082, reason: closed"),
-            "bad line:\n{line}"
-        );
-    }
-    let line = lines[0].next().expect("expected a line");
-    if closed_8081 {
-        assert!(
-            line.ends_with("Closed connection to 127.0.0.1:8082, reason: closed"),
-            "bad line:\n{line}"
-        );
-    } else {
-        assert!(
-            line.ends_with("Closed connection to 127.0.0.1:8081, reason: closed"),
-            "bad line:\n{line}"
-        );
-    }
 
     let line = lines[1].next().expect("expected a line");
     assert!(
@@ -268,11 +248,6 @@ fn happy_3_peers() -> io::Result<()> {
     );
     let line = lines[1].next().expect("expected a line");
     assert!(line.ends_with("Shutting down"), "bad line:\n{line}");
-    let line = lines[1].next().expect("expected a line");
-    assert!(
-        line.ends_with("Closed connection to 127.0.0.1:8082, reason: closed"),
-        "bad line:\n{line}"
-    );
 
     let line = lines[2].next().expect("expected a line");
     assert!(

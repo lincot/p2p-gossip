@@ -3,6 +3,7 @@ mod error;
 mod log;
 mod utils;
 
+use backoff::ExponentialBackoff;
 use clap::Parser;
 use config::{configure_client_without_server_verification, read_certs_from_file};
 use core::{
@@ -10,13 +11,16 @@ use core::{
     time::Duration,
 };
 use dns_lookup::lookup_addr;
-use error::AppResult;
+use error::{
+    is_already_open_or_locally_closed_error, is_already_open_or_locally_closed_reason, AppError,
+    AppResult,
+};
 use futures::{future::BoxFuture, FutureExt};
 use log::log;
 use quinn::{ClientConfig, Connecting, Connection, ConnectionError, Endpoint, ServerConfig};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
-use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io, path::PathBuf, sync::Arc};
 use tokio::{
     signal,
     sync::{broadcast, Mutex},
@@ -88,7 +92,7 @@ async fn run_peer(
     let peers = if let Some(connect) = connect {
         initial_connect(endpoint.clone(), connect, message_sender.clone()).await
     } else {
-        Arc::new(Mutex::new(HashSet::new()))
+        Arc::new(Mutex::new(HashMap::new()))
     };
 
     if let Some(period) = period {
@@ -106,14 +110,15 @@ async fn run_peer(
 /// and spawns `handle_incoming_connection` on them
 async fn accept_loop(
     endpoint: Endpoint,
-    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
     message_sender: broadcast::Sender<Arc<str>>,
 ) {
     while let Some(connecting) = endpoint.accept().await {
         tokio::spawn(handle_incoming_connection(
+            endpoint.clone(),
             connecting,
             peers.clone(),
-            message_sender.subscribe(),
+            message_sender.clone(),
         ));
     }
 }
@@ -123,9 +128,10 @@ async fn accept_loop(
 /// Sends the list of peers to the remote address
 /// and spawns `handle_connection`. Logs errors on failure.
 async fn handle_incoming_connection(
+    endpoint: Endpoint,
     connection_in_progress: Connecting,
-    peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    message_receiver: broadcast::Receiver<Arc<str>>,
+    peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
+    message_sender: broadcast::Sender<Arc<str>>,
 ) {
     let remote_addr = connection_in_progress.remote_address();
     match accept_connection(connection_in_progress, peers.clone()).await {
@@ -134,15 +140,15 @@ async fn handle_incoming_connection(
                 b"Accepted a connection from ",
                 remote_addr.to_string().as_bytes(),
             ]);
-            handle_connection(connection, message_receiver, peers).await;
+            handle_connection(endpoint, connection, message_sender, peers).await;
         }
-        Err(e) => log(&[
+        Err(e) if !is_already_open_or_locally_closed_error(&e) => log(&[
             b"Failed to accept a connection from ",
             remote_addr.to_string().as_bytes(),
             b", error: ",
             e.to_string().as_bytes(),
         ]),
-        Ok(None) => {}
+        Err(_) | Ok(None) => {}
     }
 }
 
@@ -151,21 +157,20 @@ async fn handle_incoming_connection(
 /// Sends the list of peers to the remote address.
 async fn accept_connection(
     connection_in_progress: Connecting,
-    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
 ) -> AppResult<Option<Connection>> {
     let connection = connection_in_progress.await?;
 
     let mut peers_lock = peers.lock().await;
-    if peers_lock.contains(&connection.remote_address()) {
+    if Some(true) == peers_lock.insert(connection.remote_address(), true) {
         connection.close(1u8.into(), b"already connected");
         return Ok(None);
     }
 
     let mut send = connection.open_uni().await?;
     for peer in &*peers_lock {
-        send.write_all(&bincode::serialize(peer).unwrap()).await?;
+        send.write_all(&bincode::serialize(peer.0).unwrap()).await?;
     }
-    peers_lock.insert(connection.remote_address());
     drop(peers_lock);
     send.finish().await?;
 
@@ -177,10 +182,10 @@ async fn initial_connect(
     endpoint: Endpoint,
     first_peer: SocketAddr,
     message_sender: broadcast::Sender<Arc<str>>,
-) -> Arc<Mutex<HashSet<SocketAddr>>> {
-    let peers = Arc::new(Mutex::new(HashSet::from([first_peer])));
-    let (failed_peers, finished) = NotifyOnDrop::create(Mutex::new(HashSet::new()));
-    outgoing_connect(
+) -> Arc<Mutex<HashMap<SocketAddr, bool>>> {
+    let peers = Arc::new(Mutex::new(HashMap::from([(first_peer, false)])));
+    let (failed_peers, finished) = NotifyOnDrop::create(());
+    let _ = outgoing_connect(
         endpoint,
         first_peer,
         message_sender,
@@ -189,59 +194,74 @@ async fn initial_connect(
     )
     .await;
     let _ = finished.await;
+    let mut peers_lock = peers.lock().await;
     log(&[
         b"Connected to the peers at [",
-        format_peers(&*peers.lock().await).as_bytes(),
+        format_peers(&peers_lock).as_bytes(),
         b"]",
     ]);
+    peers_lock.retain(|_, &mut v| v);
+    drop(peers_lock);
     peers
 }
 
-/// Connects to a node with address `addr`. Logs errors on failure.
+/// Connects to a node with address `remote_addr`. Logs errors on failure.
 async fn outgoing_connect(
     endpoint: Endpoint,
-    addr: SocketAddr,
+    remote_addr: SocketAddr,
     message_sender: broadcast::Sender<Arc<str>>,
-    peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    failed_peers: Arc<NotifyOnDrop<Mutex<HashSet<SocketAddr>>>>,
-) {
-    if let Err(e) = outgoing_connect_inner(
+    peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
+    notify_on_drop: Arc<NotifyOnDrop<()>>,
+) -> AppResult<Connection> {
+    let local_addr = endpoint.local_addr().unwrap();
+    let res = outgoing_connect_inner(
         endpoint,
-        addr,
+        remote_addr,
         message_sender,
         peers.clone(),
-        failed_peers.clone(),
+        notify_on_drop.clone(),
     )
-    .await
-    {
-        log(&[
+    .await;
+
+    match res.as_ref() {
+        Err(e) if !is_already_open_or_locally_closed_error(e) => log(&[
             b"Failed to connect to ",
-            addr.to_string().as_bytes(),
+            remote_addr.to_string().as_bytes(),
             b", error: ",
             e.to_string().as_bytes(),
-        ]);
-        failed_peers.lock().await.insert(addr);
-        peers.lock().await.remove(&addr);
+        ]),
+        Err(_) => {}
+        Ok(connection) => {
+            if Some(true) == peers.lock().await.insert(remote_addr, true)
+                // a hack to avoid both ends closing the connection
+                && local_addr < remote_addr
+            {
+                connection.close(1u8.into(), b"already connected");
+            }
+        }
     }
+
+    res
 }
 
-/// Connects to a node with address `addr`.
+/// Connects to a node with address `remote_addr`.
 fn outgoing_connect_inner(
     endpoint: Endpoint,
-    addr: SocketAddr,
+    remote_addr: SocketAddr,
     message_sender: broadcast::Sender<Arc<str>>,
-    peers: Arc<Mutex<HashSet<SocketAddr>>>,
-    failed_peers: Arc<NotifyOnDrop<Mutex<HashSet<SocketAddr>>>>,
-) -> BoxFuture<'static, AppResult<()>> {
+    peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
+    failed_peers: Arc<NotifyOnDrop<()>>,
+) -> BoxFuture<'static, AppResult<Connection>> {
     async move {
-        let name = lookup_addr(&addr.ip())?;
-        let connection = endpoint.connect(addr, &name)?.await?;
+        let name = lookup_addr(&remote_addr.ip())?;
+        let connection = endpoint.connect(remote_addr, &name)?.await?;
         let mut recv = connection.accept_uni().await?;
         let data = recv.read_to_end(10_000).await?;
-        let (mut peers_lock, failed_peers_lock) = (peers.lock().await, failed_peers.lock().await);
-        // deserialize them one by one to avoid creating a temporary array
+        let mut peers_lock = peers.lock().await;
+
         for peer in deserialize_addresses(&data) {
-            if !failed_peers_lock.contains(&peer) && peers_lock.insert(peer) {
+            if peer != endpoint.local_addr().unwrap() && !peers_lock.contains_key(&peer) {
+                peers_lock.insert(peer, false);
                 tokio::spawn(outgoing_connect(
                     endpoint.clone(),
                     peer,
@@ -251,13 +271,14 @@ fn outgoing_connect_inner(
                 ));
             }
         }
-        drop((peers_lock, failed_peers_lock));
+        drop(peers_lock);
         tokio::spawn(handle_connection(
-            connection,
-            message_sender.subscribe(),
+            endpoint,
+            connection.clone(),
+            message_sender,
             peers,
         ));
-        Ok(())
+        Ok(connection)
     }
     .boxed()
 }
@@ -265,7 +286,7 @@ fn outgoing_connect_inner(
 /// Once in `duration`, sends a random message to `message_sender`.
 async fn producer_loop(
     duration: Duration,
-    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
     message_sender: broadcast::Sender<Arc<str>>,
 ) {
     fn generate_random_message(rng: &mut impl Rng) -> String {
@@ -298,18 +319,75 @@ async fn producer_loop(
 
 /// Handles communication via `connection`. Logs errors on disconnection.
 async fn handle_connection(
+    endpoint: Endpoint,
     connection: Connection,
-    message_receiver: broadcast::Receiver<Arc<str>>,
-    peers: Arc<Mutex<HashSet<SocketAddr>>>,
+    message_sender: broadcast::Sender<Arc<str>>,
+    peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
 ) {
-    let disconnect_reason = handle_connection_inner(&connection, message_receiver).await;
-    log(&[
-        b"Closed connection to ",
-        connection.remote_address().to_string().as_bytes(),
-        b", reason: ",
-        disconnect_reason.to_string().as_bytes(),
-    ]);
-    peers.lock().await.remove(&connection.remote_address());
+    async fn retry_connection(
+        endpoint: Endpoint,
+        remote_addr: SocketAddr,
+        message_sender: broadcast::Sender<Arc<str>>,
+        peers: Arc<Mutex<HashMap<SocketAddr, bool>>>,
+    ) -> Result<bool, backoff::Error<AppError>> {
+        if Some(&true) == peers.lock().await.get(&remote_addr) {
+            return Ok(false);
+        }
+        let (notify_on_drop, finished) = NotifyOnDrop::create(());
+        let res = outgoing_connect(
+            endpoint,
+            remote_addr,
+            message_sender,
+            peers,
+            Arc::new(notify_on_drop),
+        )
+        .await
+        .map_err(|e| backoff::Error::Transient {
+            err: e,
+            retry_after: None,
+        });
+        let _ = finished.await;
+        res.map(|_| true)
+    }
+
+    let disconnect_reason = handle_connection_inner(&connection, message_sender.subscribe()).await;
+    let remote_addr = connection.remote_address();
+
+    drop(connection);
+    if !is_already_open_or_locally_closed_reason(&disconnect_reason) {
+        log(&[
+            b"Closed connection to ",
+            remote_addr.to_string().as_bytes(),
+            b", reason: ",
+            disconnect_reason.to_string().as_bytes(),
+        ]);
+    }
+
+    peers.lock().await.insert(remote_addr, false);
+
+    match disconnect_reason {
+        ConnectionError::TimedOut => {
+            // we need to reconnect even if the peer connects to us
+            // to potentially get newer peers
+            if backoff::future::retry(ExponentialBackoff::default(), || {
+                retry_connection(
+                    endpoint.clone(),
+                    remote_addr,
+                    message_sender.clone(),
+                    peers.clone(),
+                )
+            })
+            .await
+            .unwrap()
+            {
+                log(&[b"Reconnected to ", remote_addr.to_string().as_bytes()]);
+            }
+        }
+        e if is_already_open_or_locally_closed_reason(&e) => {
+            peers.lock().await.insert(remote_addr, true);
+        }
+        _ => {}
+    }
 }
 
 /// Handles communication via `connection`.

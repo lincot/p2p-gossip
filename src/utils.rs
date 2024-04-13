@@ -3,7 +3,7 @@ use core::{
     net::SocketAddr,
     ops::{Deref, DerefMut},
 };
-use std::collections::HashSet;
+use std::collections::HashMap;
 use tokio::sync::oneshot;
 
 pub struct SocketAddrDeserializer<'a> {
@@ -14,7 +14,7 @@ impl<'a> Iterator for SocketAddrDeserializer<'a> {
     type Item = SocketAddr;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let peer: SocketAddr = bincode::deserialize(&self.data).ok()?;
+        let peer: SocketAddr = bincode::deserialize(self.data).ok()?;
         self.data = &self.data[if peer.is_ipv4() {
             IPV4_SERIALIZED_LEN
         } else {
@@ -62,11 +62,15 @@ impl<T> DerefMut for NotifyOnDrop<T> {
     }
 }
 
-pub fn format_peers(peers: &HashSet<SocketAddr>) -> String {
+pub fn format_peers(peers: &HashMap<SocketAddr, bool>) -> String {
     // with IPv6, the length may be greater than the capacity provided
     let mut formatted_peers =
         String::with_capacity("\"255.255.255.255:65535\", ".len() * peers.len());
-    for (i, addr) in peers.iter().enumerate() {
+    for (i, (addr, _)) in peers
+        .iter()
+        .filter(|&(_, &finalized)| finalized)
+        .enumerate()
+    {
         if i != 0 {
             formatted_peers.push_str(", ");
         }
